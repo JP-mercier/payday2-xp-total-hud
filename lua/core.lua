@@ -14,6 +14,8 @@ XPTotalHUD.settings = {
 	pos_x = 100,
 	pos_y = 65,
 	show_gain = true,
+	show_level = true,
+	show_bar = true,
 	heist_level_xp = false,
 	profile_enabled = true,
 	lobby_enabled = true,
@@ -33,6 +35,9 @@ XPTotalHUD.GAP = 6
 XPTotalHUD.PREFIX_COLOR = Color(0.7, 0.7, 0.7)
 XPTotalHUD.GAIN_COLOR = Color(0.45, 0.9, 0.45)
 XPTotalHUD.SHADOW_COLOR = Color.black:with_alpha(0.75)
+XPTotalHUD.BAR_GAP = 3
+XPTotalHUD.BAR_BG_COLOR = Color.black:with_alpha(0.6)
+XPTotalHUD.BAR_CURRENT_COLOR = Color(0.8, 0.8, 0.8)
 -- Sample numbers for the options preview of the heist label.
 XPTotalHUD.PREVIEW_TOTAL = 1234567
 XPTotalHUD.PREVIEW_GAIN = 12345
@@ -41,6 +46,7 @@ XPTotalHUD._total = nil
 XPTotalHUD._gain = 0
 XPTotalHUD._gain_t = nil
 XPTotalHUD._level_lines_cache = nil
+XPTotalHUD._projection_cache = nil
 XPTotalHUD._level_points = nil
 XPTotalHUD._hud_label = nil
 XPTotalHUD._ws = nil
@@ -161,6 +167,55 @@ function XPTotalHUD:_compute_level_lines()
 	return lines
 end
 
+-- Where the day leaves you if it pays `total`, following ExperienceManager:add_points: each level takes
+-- what is left of its points, and at the level cap the rest goes to the infamy pool when infamous (lost
+-- otherwise). `start` and `fill` are the bar's white and green ends, as fractions of the end level (or
+-- of the pool). After a level-up the white part is empty: progress in the new level is all from the day.
+function XPTotalHUD:_compute_projection(total)
+	local xp = managers.experience
+	local level, cap = xp:current_level(), xp:level_cap()
+	if level >= cap then
+		if xp:current_rank() == 0 then
+			return { level = level, end_level = level, start = 1, fill = 1 }
+		end
+		local pool, max = xp:get_current_prestige_xp(), xp:get_max_prestige_xp()
+		if max <= 0 then
+			return nil
+		end
+		return { level = level, end_level = level, pool = true, start = pool / max, fill = math.min(pool + total, max) / max }
+	end
+
+	local points = self:_get_level_points()
+	local end_level = level
+	local current, needed = xp:next_level_data_current_points(), xp:next_level_data_points()
+	local start, left = current, total
+	while needed > 0 and left >= needed - current do
+		left = left - (needed - current)
+		end_level = end_level + 1
+		current, start = 0, 0
+		if end_level >= cap then
+			return { level = level, end_level = end_level, start = 0, fill = 1 }
+		end
+		needed = points[end_level + 1] or 0
+	end
+	if needed <= 0 then
+		return nil
+	end
+	return { level = level, end_level = end_level, start = start / needed, fill = (current + left) / needed }
+end
+
+-- The level line: "Level 93", or "Level 93 > 94" in green when the day levels you up. At level 100 while
+-- infamous, the infamy pool's fill after the day instead.
+function XPTotalHUD:_projection_line(projection)
+	if projection.pool then
+		return { "Infamy pool", math.floor(projection.fill * 100) .. "%" }
+	end
+	if projection.end_level > projection.level then
+		return { "Level", projection.level .. " > " .. projection.end_level, self.GAIN_COLOR }
+	end
+	return { "Level", tostring(projection.level) }
+end
+
 -- Appends the level lines (last good ones if the calculation fails) to `lines`.
 function XPTotalHUD:_append_level_lines(lines)
 	self._level_lines_cache = self:_safe(self._compute_level_lines) or self._level_lines_cache
@@ -241,6 +296,24 @@ function XPTotalHUD:_set_piece_text(piece, str)
 	piece:set_size(w + 1, h + 1)
 end
 
+-- Background, then white (progress before the day) and green (what the day adds) fills.
+function XPTotalHUD:_create_bar(parent)
+	local bar = parent:panel({ name = "bar" })
+	bar:rect({ name = "bg", color = self.BAR_BG_COLOR, layer = 0 })
+	bar:rect({ name = "current", color = self.BAR_CURRENT_COLOR, layer = 1 })
+	bar:rect({ name = "gain", color = self.GAIN_COLOR, layer = 2 })
+	return bar
+end
+
+function XPTotalHUD:_set_bar(bar, w, h, start, fill)
+	local start_w = math.round(w * math.clamp(start, 0, 1))
+	local fill_w = math.max(math.round(w * math.clamp(fill, 0, 1)), start_w)
+	bar:set_size(w, h)
+	bar:child("bg"):set_size(w, h)
+	bar:child("current"):set_size(start_w, h)
+	bar:child("gain"):set_shape(start_w, 0, fill_w - start_w, h)
+end
+
 -- Stacked "Prefix value" lines, plus a "+12,345" beside the first line.
 function XPTotalHUD:_create_label(parent, name, layer)
 	local panel = parent:panel({
@@ -252,14 +325,16 @@ function XPTotalHUD:_create_label(parent, name, layer)
 	return {
 		panel = panel,
 		lines = {},
-		gain = self:_create_piece(panel, "gain", self.GAIN_COLOR)
+		gain = self:_create_piece(panel, "gain", self.GAIN_COLOR),
+		bar = self:_create_bar(panel)
 	}
 end
 
 -- Positions are percentages of the HUD area: 0 puts the block against the left/top edge and 100
 -- against the right/bottom edge, so it never leaves the screen. Lines align to the edge the block is
--- near, and the gain goes on the inner side of the first line so that line doesn't shift.
-function XPTotalHUD:_set_label(label, lines, gain, pos_x, pos_y)
+-- near, and the gain goes on the inner side of the first line so that line doesn't shift. A line's
+-- optional third entry colors its value. `bar` ({ start, fill }) adds a progress bar under the lines.
+function XPTotalHUD:_set_label(label, lines, gain, pos_x, pos_y, bar)
 	for i, line in ipairs(lines) do
 		local piece = label.lines[i]
 		if not piece then
@@ -269,6 +344,9 @@ function XPTotalHUD:_set_label(label, lines, gain, pos_x, pos_y)
 		piece:set_visible(true)
 		self:_set_piece_text(piece, line[1] .. " " .. line[2])
 		piece:child("text"):set_range_color(0, #line[1], self.PREFIX_COLOR)
+		if line[3] then
+			piece:child("text"):set_range_color(#line[1] + 1, #line[1] + 1 + #line[2], line[3])
+		end
 	end
 	for i = #lines + 1, #label.lines do
 		label.lines[i]:set_visible(false)
@@ -280,11 +358,16 @@ function XPTotalHUD:_set_label(label, lines, gain, pos_x, pos_y)
 		block_w = math.max(block_w, label.lines[i]:w())
 		block_h = block_h + label.lines[i]:h()
 	end
+	-- Minimum width so the bar doesn't jump as the numbers above it change length.
+	local bar_w, bar_h = math.max(block_w, self.settings.font_size * 8), math.max(3, math.round(self.settings.font_size / 3))
+	if bar then
+		block_w = bar_w
+		block_h = block_h + self.BAR_GAP + bar_h
+	end
 	local px, py = pos_x / 100, pos_y / 100
 	local x = math.round(px * (panel:w() - block_w))
 	local y = math.round(py * (panel:h() - block_h))
-	for i = 1, #lines do
-		local piece = label.lines[i]
+	local function place(piece)
 		if px > 0.5 then
 			piece:set_x(x + block_w - piece:w())
 		elseif px < 0.5 then
@@ -294,6 +377,15 @@ function XPTotalHUD:_set_label(label, lines, gain, pos_x, pos_y)
 		end
 		piece:set_y(y)
 		y = y + piece:h()
+	end
+	for i = 1, #lines do
+		place(label.lines[i])
+	end
+	label.bar:set_visible(bar ~= nil)
+	if bar then
+		self:_set_bar(label.bar, bar_w, bar_h, bar.start, bar.fill)
+		y = y + self.BAR_GAP
+		place(label.bar)
 	end
 
 	local show_gain = gain ~= nil and gain > 0 and #lines > 0
@@ -311,13 +403,27 @@ function XPTotalHUD:_set_label(label, lines, gain, pos_x, pos_y)
 	panel:set_alpha(self.settings.opacity / 100)
 end
 
--- Heist label lines: the day's total, then the level lines if enabled.
+-- Heist label lines: the day's total, the level lines if enabled, then the level the day ends at.
+-- Also returns the projection for the bar, or nil when the bar is off.
 function XPTotalHUD:_heist_lines(total)
 	local lines = { { "XP", self:format_xp(total) } }
 	if self.settings.heist_level_xp then
 		self:_append_level_lines(lines)
 	end
-	return lines
+	if not self.settings.show_level and not self.settings.show_bar then
+		return lines
+	end
+	self._projection_cache = self:_safe(function()
+		return self:_compute_projection(total)
+	end) or self._projection_cache
+	local projection = self._projection_cache
+	if not projection then
+		return lines
+	end
+	if self.settings.show_level then
+		table.insert(lines, self:_projection_line(projection))
+	end
+	return lines, self.settings.show_bar and projection or nil
 end
 
 function XPTotalHUD:refresh()
@@ -376,7 +482,8 @@ function XPTotalHUD:_refresh_hud()
 	label.panel:set_visible(show)
 	if show then
 		local gain = self.settings.show_gain and self._gain_t and self._gain or nil
-		self:_set_label(label, self:_heist_lines(self._total), gain, self.settings.pos_x, self.settings.pos_y)
+		local lines, bar = self:_heist_lines(self._total)
+		self:_set_label(label, lines, gain, self.settings.pos_x, self.settings.pos_y, bar)
 	end
 end
 
@@ -552,7 +659,8 @@ function XPTotalHUD:update_preview()
 	self._preview.panel:set_visible(self.settings.enabled)
 	if self.settings.enabled then
 		local gain = self.settings.show_gain and self.PREVIEW_GAIN or nil
-		self:_set_label(self._preview, self:_heist_lines(self.PREVIEW_TOTAL), gain, self.settings.pos_x, self.settings.pos_y)
+		local lines, bar = self:_heist_lines(self.PREVIEW_TOTAL)
+		self:_set_label(self._preview, lines, gain, self.settings.pos_x, self.settings.pos_y, bar)
 	end
 end
 

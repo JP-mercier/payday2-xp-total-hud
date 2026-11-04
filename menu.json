@@ -51,6 +51,24 @@
 		},
 		{
 			"type" : "toggle",
+			"id" : "xp_total_hud_show_level",
+			"title" : "xp_total_hud_show_level_title",
+			"description" : "xp_total_hud_show_level_desc",
+			"callback" : "xp_total_hud_callback_toggle",
+			"value" : "show_level",
+			"default_value" : true
+		},
+		{
+			"type" : "toggle",
+			"id" : "xp_total_hud_show_bar",
+			"title" : "xp_total_hud_show_bar_title",
+			"description" : "xp_total_hud_show_bar_desc",
+			"callback" : "xp_total_hud_callback_toggle",
+			"value" : "show_bar",
+			"default_value" : true
+		},
+		{
+			"type" : "toggle",
 			"id" : "xp_total_hud_heist_level_xp",
 			"title" : "xp_total_hud_heist_level_xp_title",
 			"description" : "xp_total_hud_heist_level_xp_desc",
