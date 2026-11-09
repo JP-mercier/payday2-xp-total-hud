@@ -6,14 +6,12 @@ In heists, a small label with the XP the current day pays if it ends now, the le
 
 | | |
 |---|---|
-| <img src="screenshots/heist-start.png" width="440" alt="XP 0, Level 93, empty bar"> | <img src="screenshots/first-objective.png" width="440" alt="+117,480, XP 117,480, Level 93"> |
-| Start of the heist: nothing earned yet | First objective: +117,480 |
-| <img src="screenshots/second-objective.png" width="440" alt="+88,110, XP 205,590, Level 93"> | <img src="screenshots/third-objective.png" width="440" alt="+88,110, XP 293,700, Level 93"> |
-| Second objective: +88,110 | Third objective: +88,110 |
+| <img src="screenshots/first-objective.png" width="440" alt="+117,480, XP 117,480, Level 93"> | <img src="screenshots/multi-level.png" width="440" alt="XP 1,004,400, Level 83 > 85, green bar"> |
+| Big Bank at level 93, first objective: +117,480. The bar fills toward level 94 as objectives pay out. | More than one level in a heist: 1,004,400 XP takes level 83 to 85. |
 
-Big Bank at level 93, cropped and zoomed 2x from 2560x1440 with VanillaHUD Plus. The bar fills toward level 94 as objectives pay out.
+Cropped and zoomed 2x from 2560x1440 with VanillaHUD Plus.
 
-The level reads `93` until the day's XP is enough for a level-up, then `93 > 94` in green. In the bar, white is the progress you already have in that level and green is what the day adds. After a level-up the bar is all green, since all progress in the new level comes from the day.
+The level reads `93` until the day's XP is enough for a level-up, then `93 > 94` in green, or `83 > 85` when the day covers more than one level. In the bar, white is the progress you already have in that level and green is what the day adds. After a level-up the bar is all green, since all progress in the new level comes from the day.
 
 In the main menu profile box, under CASH / OFFSHORE ACCOUNT / COINS, in the same style:
 
