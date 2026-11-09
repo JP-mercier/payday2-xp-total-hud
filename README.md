@@ -7,7 +7,7 @@ In heists, a small label with the XP the current day pays if it ends now, the le
 | | |
 |---|---|
 | <img src="screenshots/first-objective.png" width="440" alt="+117,480, XP 117,480, Level 93"> | <img src="screenshots/multi-level.png" width="440" alt="XP 1,004,400, Level 83 > 85, green bar"> |
-| Big Bank at level 93, first objective: +117,480. The bar fills toward level 94 as objectives pay out. | More than one level in a heist: 1,004,400 XP takes level 83 to 85. |
+| XP earned so far, with the latest gain in green. The bar fills toward the next level. | More than one level in a heist: 1,004,400 XP takes level 83 to 85. |
 
 Cropped and zoomed 2x from 2560x1440 with VanillaHUD Plus.
 
