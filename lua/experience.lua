@@ -16,7 +16,8 @@ Hooks:PostHook(ExperienceManager, "mission_xp_award", "XPTotalHUD_mission_xp_awa
 	end
 	local total_after = XPTotalHUD:current_total()
 	if total_after then
-		XPTotalHUD:add_gain(total_after - total_before)
+		-- Set by lua/element.lua while an Experience element runs.
+		XPTotalHUD:add_gain(total_after - total_before, XPTotalHUD._award_element, XPTotalHUD._award_base)
 	end
 	total_before = nil
 end)

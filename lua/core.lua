@@ -23,7 +23,17 @@ XPTotalHUD.settings = {
 	lobby_pos_y = 27,
 	font_size = 18,
 	opacity = 100,
-	round_thousands = false
+	round_thousands = false,
+	log_enabled = true,
+	log_show_xp = true,
+	log_show_objectives = true,
+	log_show_done = false,
+	log_show_time = true,
+	log_name_length = 28,
+	log_pos_x = 100,
+	log_pos_y = 40,
+	log_lines = 6,
+	log_fade = 0
 }
 
 -- The heist total also moves when players die, go into custody or leave, not only when objectives
@@ -41,6 +51,38 @@ XPTotalHUD.BAR_CURRENT_COLOR = Color(0.8, 0.8, 0.8)
 -- Sample numbers for the options preview of the heist label.
 XPTotalHUD.PREVIEW_TOTAL = 1234567
 XPTotalHUD.PREVIEW_GAIN = 12345
+-- Log: entries kept per heist day (loot awards can add many XP entries), and seconds a line takes to
+-- fade out once it's older than the fade setting.
+XPTotalHUD.LOG_KEEP = 60
+XPTotalHUD.LOG_FADE_OUT = 1
+XPTotalHUD.LOG_TEXT_COLOR = Color(0.9, 0.9, 0.9)
+-- An XP award is credited to a sub-objective or objective completed this many seconds before or
+-- after it. Mission scripts run the XP and objective elements together,
+-- in either order.
+XPTotalHUD.CAUSE_WINDOW = 2
+-- Awards with the same cause this close together are one line.
+XPTotalHUD.LOG_MERGE_SECONDS = 1
+-- Words dropped from mission element names when one is shown as the cause ("xp_hack_done_002" ->
+-- "Hack done").
+XPTotalHUD.ELEMENT_NAME_STOP_WORDS = {
+	xp = true, exp = true, experience = true, give = true, func = true, award = true, add = true,
+	element = true, logic = true, trigger = true, mission = true, points = true, point = true
+}
+-- Sample lines for the options preview of the log.
+XPTotalHUD.PREVIEW_LOG = {
+	{ kind = "new", text = "Find the security room", time = "00:42" },
+	{ kind = "done", text = "Find the security room", time = "02:10" },
+	{ kind = "xp", amount = 4000, time = "02:10", cause = "Find the security room", cause_kind = "done" },
+	{ kind = "new", text = "Find dirt on Alice Rainey (Email, Voicemail, Photos)", time = "02:11" },
+	{ kind = "sub", text = "Email", time = "03:20" },
+	{ kind = "xp", amount = 30870, time = "03:20", cause = "Email", cause_kind = "sub" },
+	{ kind = "sub", text = "Voicemail", time = "04:02" },
+	{ kind = "xp", amount = 30870, time = "04:02", cause = "Voicemail", cause_kind = "sub" },
+	{ kind = "xp", amount = 8000, time = "04:30", cause = "Pager answered", cause_kind = "element" },
+	{ kind = "done", text = "Find dirt on Alice Rainey (Email, Voicemail, Photos)", time = "05:37" },
+	{ kind = "xp", amount = 339570, time = "05:37", cause = "Find dirt on Alice Rainey (Email, Voicemail, Photos)", cause_kind = "done" },
+	{ kind = "new", text = "Escape available", time = "05:38" }
+}
 
 XPTotalHUD._total = nil
 XPTotalHUD._gain = 0
@@ -49,6 +91,9 @@ XPTotalHUD._level_lines_cache = nil
 XPTotalHUD._projection_cache = nil
 XPTotalHUD._level_points = nil
 XPTotalHUD._hud_label = nil
+XPTotalHUD._log = {}
+XPTotalHUD._log_label = nil
+XPTotalHUD._log_preview = nil
 XPTotalHUD._ws = nil
 XPTotalHUD._lobby_label = nil
 XPTotalHUD._preview = nil
@@ -230,18 +275,23 @@ function XPTotalHUD:in_crime_spree()
 	return managers.crime_spree and managers.crime_spree:is_active() or false
 end
 
--- True while there is a heist label to feed.
+-- True while in a heist that pays XP the normal way. Gains are recorded even while the label or the
+-- log is turned off, so turning the log on mid-heist shows what already happened.
 function XPTotalHUD:tracking()
-	return self.settings.enabled and self._hud_label ~= nil and alive(self._hud_label.panel) and not self:in_crime_spree()
+	return self._hud_label ~= nil and alive(self._hud_label.panel) and not self:in_crime_spree()
 end
 
--- Called from the mission_xp_award hooks with the difference in total. Gains in quick succession add up.
-function XPTotalHUD:add_gain(amount)
+-- Called from the mission_xp_award hooks with the difference in total, and the editor name and base
+-- amount of the Experience element giving it. Gains in quick succession add up.
+function XPTotalHUD:add_gain(amount, element_name, base_amount)
 	if amount <= 0 then
 		return
 	end
 	self._gain = (self._gain_t and self._gain or 0) + amount
 	self._gain_t = self.GAIN_SECONDS
+	self:_safe(function()
+		self:log_xp(amount, element_name, base_amount)
+	end)
 	self:refresh()
 end
 
@@ -428,6 +478,7 @@ end
 
 function XPTotalHUD:refresh()
 	self:_refresh_hud()
+	self:_refresh_log()
 	self:_refresh_lobby()
 end
 
@@ -447,6 +498,7 @@ function XPTotalHUD:create_hud_label(hud_panel)
 		self:_hud_update()
 	end)
 	self:_refresh_hud()
+	self:create_log_label(hud_panel)
 end
 
 function XPTotalHUD:_hud_update()
@@ -485,6 +537,363 @@ function XPTotalHUD:_refresh_hud()
 		local lines, bar = self:_heist_lines(self._total)
 		self:_set_label(label, lines, gain, self.settings.pos_x, self.settings.pos_y, bar)
 	end
+end
+
+----------------------------------------------------------------
+-- Heist log: XP gains and objectives, newest line at the bottom
+----------------------------------------------------------------
+-- "05:37" from the heist timer, or nil before it starts. Pre-planned heists count down, hence abs.
+function XPTotalHUD:_heist_time()
+	local central = managers.game_play_central
+	local timer = central and central._heist_timer
+	if not timer or not timer.running then
+		return nil
+	end
+	local t = math.floor(math.abs(central:get_heist_timer()))
+	local h, m, s = math.floor(t / 3600), math.floor(t / 60) % 60, t % 60
+	if h > 0 then
+		return string.format("%d:%02d:%02d", h, m, s)
+	end
+	return string.format("%02d:%02d", m, s)
+end
+
+function XPTotalHUD:_log_add(entry)
+	entry.age = 0
+	entry.time = self:_safe(self._heist_time)
+	table.insert(self._log, entry)
+	while #self._log > self.LOG_KEEP do
+		table.remove(self._log, 1)
+	end
+	self:_refresh_log()
+end
+
+-- "xp_hack_done_002" -> "Hack done", or nil when nothing meaningful is left.
+function XPTotalHUD:_element_label(name)
+	if type(name) ~= "string" then
+		return nil
+	end
+	local words = {}
+	for word in name:lower():gsub("[_%-%.]", " "):gmatch("%S+") do
+		if not word:match("^%d+$") and not self.ELEMENT_NAME_STOP_WORDS[word] then
+			table.insert(words, word)
+		end
+	end
+	if #words == 0 then
+		return nil
+	end
+	local label = table.concat(words, " ")
+	return label:sub(1, 1):upper() .. label:sub(2)
+end
+
+-- Objective names by base XP (lua/ehi_xp_names.lua, built from Extra Heist Info's tables by
+-- tools/extract_ehi_xp.py): { levels = { level id -> base XP -> names }, redirect = { level id -> level
+-- id } }. False if it can't be loaded.
+function XPTotalHUD:_ehi_table()
+	if self._ehi == nil then
+		local ok, data = pcall(dofile, self._path .. "lua/ehi_xp_names.lua")
+		if ok and type(data) == "table" and type(data.levels) == "table" then
+			self._ehi = data
+		else
+			self._ehi = false
+			log("[XP Total HUD] couldn't load ehi_xp_names.lua: " .. tostring(data))
+		end
+	end
+	return self._ehi
+end
+
+-- The names for a base XP amount on the current level, or nil.
+function XPTotalHUD:_ehi_names(base_amount)
+	local data = base_amount and self:_ehi_table()
+	local level_id = data and Global.game_settings and Global.game_settings.level_id
+	if not level_id then
+		return nil
+	end
+	local level = data.levels[data.redirect and data.redirect[level_id] or level_id]
+	return level and level[base_amount] or nil
+end
+
+-- Causes, best first: EHI's name when the amount has only one on this level, a sub-objective or
+-- objective completed within CAUSE_WINDOW seconds, EHI's names when several share the amount, the
+-- element name. An objective appearing isn't a cause: XP next to it pays for the step just finished.
+local CAUSE_RANK = { ehi = 3, sub = 2, done = 1, ehi_multi = 0.5, element = 0 }
+
+-- Called from the mission_xp_award hooks with the Experience element's editor name and base amount.
+-- An objective event that comes right after can still claim the award (log_objective).
+function XPTotalHUD:log_xp(amount, element_name, base_amount)
+	local now = Application:time()
+	local entry = { kind = "xp", amount = amount, t = now }
+	local names = self:_ehi_names(base_amount)
+	if names and #names == 1 then
+		entry.cause, entry.cause_kind = names[1], "ehi"
+		self:_log_add(entry)
+		return
+	end
+	for i = #self._log, 1, -1 do
+		local event = self._log[i]
+		if event.t and now - event.t > self.CAUSE_WINDOW then
+			break
+		end
+		local rank = CAUSE_RANK[event.kind]
+		if event.kind ~= "xp" and rank and rank > (CAUSE_RANK[entry.cause_kind] or -1) then
+			entry.cause, entry.cause_kind = event.text, event.kind
+		end
+	end
+	if not entry.cause and names and #names > 1 then
+		entry.cause, entry.cause_kind = table.concat(names, " / "), "ehi_multi"
+	end
+	if not entry.cause then
+		entry.cause = self:_element_label(element_name)
+		entry.cause_kind = entry.cause and "element" or nil
+	end
+	self:_log_add(entry)
+end
+
+-- kind is "new", "done" or "sub" (a sub-objective done). Only recorded during a heist (the log is reset
+-- when the HUD is built).
+function XPTotalHUD:log_objective(kind, text)
+	if not self._log_label or not alive(self._log_label.panel) or type(text) ~= "string" then
+		return
+	end
+	text = self:_trim(text)
+	if text == "" then
+		return
+	end
+	-- Some missions activate the same objective twice in a row.
+	local last = self._log[#self._log]
+	if last and last.kind == kind and last.text == text and last.age < 2 then
+		return
+	end
+	-- XP awarded just before this event, in the same mission script run, belongs to it.
+	local now = Application:time()
+	local rank = CAUSE_RANK[kind]
+	for i = #self._log, 1, -1 do
+		local entry = self._log[i]
+		if not rank or entry.t and now - entry.t > self.CAUSE_WINDOW then
+			break
+		end
+		if entry.kind == "xp" and rank > (CAUSE_RANK[entry.cause_kind] or -1) then
+			entry.cause, entry.cause_kind = text, kind
+		end
+	end
+	self:_log_add({ kind = kind, text = text, t = now })
+end
+
+function XPTotalHUD:_trim(text)
+	return (text:gsub("%s+", " "):gsub("^ ", ""):gsub(" $", ""))
+end
+
+-- The mission objective text, shortened for the log: anything in brackets goes ("Find dirt on Alice
+-- Rainey (Email, Voicemail, ...)" -> "Find dirt on Alice Rainey"), then it's cut at a word boundary to
+-- log_name_length characters.
+function XPTotalHUD:_short_name(text)
+	local short = self:_trim(text:gsub("%b()", ""):gsub("%b[]", ""))
+	short = self:_trim(short:gsub("[%s:,;%-]+$", ""))
+	if short == "" then
+		short = text
+	end
+	local max = self.settings.log_name_length
+	if utf8.len(short) <= max then
+		return short
+	end
+	local cut = utf8.sub(short, 1, max)
+	local space = cut:match(".*() ")
+	if space and space > #cut / 2 then
+		cut = cut:sub(1, space - 1)
+	end
+	return self:_trim(cut:gsub("[%s:,;%-]+$", "")) .. "..."
+end
+
+-- Colored pieces of one log line: { text, color } pairs.
+function XPTotalHUD:_log_segments(item)
+	local segments = {}
+	if self.settings.log_show_time and item.time then
+		table.insert(segments, { item.time .. "  ", self.PREFIX_COLOR })
+	end
+	if item.kind == "xp" then
+		if item.cause then
+			-- Element names are a best guess from the mission script, so they're grey.
+			table.insert(segments, { "+" .. self:format_xp(item.amount) .. "  ", self.GAIN_COLOR })
+			local name = item.cause_kind == "element" and item.cause or self:_short_name(item.cause)
+			table.insert(segments, { name, item.cause_kind == "element" and self.PREFIX_COLOR or self.LOG_TEXT_COLOR })
+		else
+			table.insert(segments, { "+" .. self:format_xp(item.amount) .. " XP", self.GAIN_COLOR })
+		end
+	elseif item.kind == "done" or item.kind == "sub" then
+		table.insert(segments, { "Done ", self.GAIN_COLOR })
+		table.insert(segments, { self:_short_name(item.text), self.PREFIX_COLOR })
+	else
+		table.insert(segments, { self:_short_name(item.text), self.LOG_TEXT_COLOR })
+	end
+	return segments
+end
+
+function XPTotalHUD:_log_entry_shown(entry)
+	if entry.kind == "xp" then
+		return self.settings.log_show_xp
+	elseif entry.kind == "done" or entry.kind == "sub" then
+		return self.settings.log_show_done
+	end
+	return self.settings.log_show_objectives
+end
+
+-- The last log_lines lines from the entries that pass the filters, oldest first, with their fade
+-- alpha. Back-to-back XP entries with the same cause within LOG_MERGE_SECONDS become one line.
+-- `fade` overrides the fade setting (0 = no fading).
+function XPTotalHUD:_log_view(entries, fade)
+	local items = {}
+	fade = fade or self.settings.log_fade
+	for i = #entries, 1, -1 do
+		local entry = entries[i]
+		if self:_log_entry_shown(entry) then
+			local alpha = 1
+			if fade > 0 then
+				alpha = math.clamp((fade + self.LOG_FADE_OUT - (entry.age or 0)) / self.LOG_FADE_OUT, 0, 1)
+			end
+			if alpha <= 0 then
+				break
+			end
+			local newer = items[1]
+			if entry.kind == "xp" and newer and newer.kind == "xp" and newer.cause == entry.cause and entry.t and newer.t
+				and newer.t - entry.t <= self.LOG_MERGE_SECONDS then
+				newer.amount = newer.amount + entry.amount
+				newer.time, newer.t = entry.time, entry.t
+			elseif #items >= self.settings.log_lines then
+				break
+			else
+				table.insert(items, 1, {
+					kind = entry.kind,
+					text = entry.text,
+					amount = entry.amount,
+					cause = entry.cause,
+					cause_kind = entry.cause_kind,
+					time = entry.time,
+					t = entry.t,
+					alpha = alpha
+				})
+			end
+		end
+	end
+	local view = {}
+	for i, item in ipairs(items) do
+		view[i] = { segments = self:_log_segments(item), alpha = item.alpha }
+	end
+	return view
+end
+
+function XPTotalHUD:_create_log(parent, name, layer)
+	return {
+		panel = parent:panel({
+			name = name,
+			layer = layer or 0,
+			halign = "grow",
+			valign = "grow"
+		}),
+		lines = {}
+	}
+end
+
+-- The log keeps room for log_lines lines at its position so lines don't jump around as it fills. Near
+-- the top edge (Y 50 or less) it fills from the top of that room, otherwise from the bottom.
+function XPTotalHUD:_set_log(log, view, pos_x, pos_y)
+	local panel = log.panel
+	for i, line in ipairs(view) do
+		local piece = log.lines[i]
+		if not piece then
+			piece = self:_create_piece(panel, "line" .. i, Color.white)
+			log.lines[i] = piece
+		end
+		local str = ""
+		for _, segment in ipairs(line.segments) do
+			str = str .. segment[1]
+		end
+		piece:set_visible(true)
+		self:_set_piece_text(piece, str)
+		local text = piece:child("text")
+		local pos = 0
+		for _, segment in ipairs(line.segments) do
+			local len = utf8.len(segment[1])
+			text:set_range_color(pos, pos + len, segment[2])
+			pos = pos + len
+		end
+		piece:set_alpha(line.alpha)
+	end
+	for i = #view + 1, #log.lines do
+		log.lines[i]:set_visible(false)
+	end
+	panel:set_visible(#view > 0)
+	if #view == 0 then
+		return
+	end
+
+	local line_h = log.lines[1]:h()
+	local block_w = 0
+	for i = 1, #view do
+		block_w = math.max(block_w, log.lines[i]:w())
+	end
+	local room_h = math.max(self.settings.log_lines, #view) * line_h
+	local px, py = pos_x / 100, pos_y / 100
+	local x = math.round(px * (panel:w() - block_w))
+	local y = math.round(py * (panel:h() - room_h))
+	if py > 0.5 then
+		y = y + room_h - #view * line_h
+	end
+	for i = 1, #view do
+		local piece = log.lines[i]
+		if px > 0.5 then
+			piece:set_x(x + block_w - piece:w())
+		elseif px < 0.5 then
+			piece:set_x(x)
+		else
+			piece:set_x(math.round(x + (block_w - piece:w()) / 2))
+		end
+		piece:set_y(y + (i - 1) * line_h)
+	end
+	panel:set_alpha(self.settings.opacity / 100)
+end
+
+function XPTotalHUD:create_log_label(hud_panel)
+	local old = hud_panel:child("xp_total_hud_log")
+	if old then
+		hud_panel:remove(old)
+	end
+	self._log = {}
+	-- Loads the names now (the loading screen) rather than at the first award, mid-heist.
+	self:_safe(self._ehi_table)
+	self._log_label = self:_create_log(hud_panel, "xp_total_hud_log")
+	self._log_label.panel:animate(function()
+		self:_log_update()
+	end)
+	self:_refresh_log()
+end
+
+-- Ages the entries; redraws only while a line is fading out.
+function XPTotalHUD:_log_update()
+	while true do
+		local dt = coroutine.yield()
+		local fade = self.settings.log_fade
+		local redraw = false
+		for _, entry in ipairs(self._log) do
+			local before = entry.age
+			entry.age = before + dt
+			if fade > 0 and entry.age > fade and before <= fade + self.LOG_FADE_OUT then
+				redraw = true
+			end
+		end
+		if redraw then
+			self:_refresh_log()
+		end
+	end
+end
+
+function XPTotalHUD:_refresh_log()
+	local log = self._log_label
+	if not log or not alive(log.panel) then
+		return
+	end
+	local show = self.settings.log_enabled and not self._preview_visible
+	self:_safe(function()
+		self:_set_log(log, show and self:_log_view(self._log) or {}, self.settings.log_pos_x, self.settings.log_pos_y)
+	end)
 end
 
 ----------------------------------------------------------------
@@ -620,6 +1029,9 @@ function XPTotalHUD:show_preview(node)
 	if not self._preview then
 		self._preview = self:_create_label(self:_overlay_panel(), "xp_total_hud_preview", tweak_data.gui.ATTRACT_SCREEN_LAYER)
 	end
+	if not self._log_preview then
+		self._log_preview = self:_create_log(self:_overlay_panel(), "xp_total_hud_log_preview", tweak_data.gui.ATTRACT_SCREEN_LAYER)
+	end
 	self:_ensure_lobby_label()
 	self._preview_visible = true
 	self:update_preview()
@@ -644,6 +1056,9 @@ function XPTotalHUD:hide_preview()
 	if self._preview then
 		self._preview.panel:set_visible(false)
 	end
+	if self._log_preview then
+		self._log_preview.panel:set_visible(false)
+	end
 	self:refresh()
 end
 
@@ -661,6 +1076,11 @@ function XPTotalHUD:update_preview()
 		local gain = self.settings.show_gain and self.PREVIEW_GAIN or nil
 		local lines, bar = self:_heist_lines(self.PREVIEW_TOTAL)
 		self:_set_label(self._preview, lines, gain, self.settings.pos_x, self.settings.pos_y, bar)
+	end
+	-- Sample lines don't fade, so the log stays visible while it's being placed.
+	if self._log_preview then
+		local view = self.settings.log_enabled and self:_log_view(self.PREVIEW_LOG, 0) or {}
+		self:_set_log(self._log_preview, view, self.settings.log_pos_x, self.settings.log_pos_y)
 	end
 end
 

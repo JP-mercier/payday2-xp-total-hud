@@ -24,9 +24,35 @@ In lobbies, which have no profile box, the same two lines as a small label under
 
 The heist total is the same number XP Notifier prints as "Total XP". The green `+gain` appears for 5 seconds after an objective gives XP. Gains that land within that window add up.
 
+In heists there is also a log of objectives as they appear and of each XP award with what gave it, newest at the bottom:
+
+```
+02:10  +4,000  Timelock done
+02:11  Open the vault
+03:20  +30,870  Email
+05:37  +8,000  Correct PC Hack / Escape
+```
+
+## Heist log
+
+Each award's label is picked in this order:
+
+1. The objective that pays that base amount on this heist, from the table in `lua/ehi_xp_names.lua` (names from [Extra Heist Info](https://modworkshop.net/mod/31915) by Dom), when only one objective pays it.
+2. A sub-objective, then an objective, completed within 2 seconds of the award, before or after it. Mission scripts run the XP and objective elements together, in either order.
+3. The table's names joined with ` / ` when several objectives on the heist pay the same amount.
+4. The mission script's name for the Experience element, with numbers and words like `xp` / `func` removed (`xp_pager_answered_002` -> `Pager answered`), in grey.
+
+An objective appearing is never used as a label: XP next to it pays for the step just finished. Awards with the same label within 1 second share a line. Amounts on the line are after all multipliers (the gain in the heist total); the table lookup uses the element's base amount.
+
+`lua/ehi_xp_names.lua` holds 109 heists. `tools/extract_ehi_xp.py` rebuilds it from an EHI download, reading EHI's level files and `loc/english.json` as text (EHI doesn't need to be installed):
+
+```
+python -I tools/extract_ehi_xp.py "<EHI folder holding lua/ and loc/>"
+```
+
 ## Install
 
-Copy the `XP Total HUD` folder into `PAYDAY 2/mods/`. Requires SuperBLT. The `screenshots` folder is only for this README and can be left out.
+Copy the `XP Total HUD` folder into `PAYDAY 2/mods/`. Requires SuperBLT. The `screenshots` and `tools` folders are only for this README and for rebuilding the XP name table, and can be left out.
 
 ## Level lines
 
@@ -48,6 +74,15 @@ Mod Options > XP Total HUD. While this menu is open, a sample heist label (`XP 1
 | Heist: show level at day end | on | `Level 93`, or `Level 93 > 94` in green when the day levels you up. At level 100 while infamous, `Infamy pool 62%` (the pool's fill after the day). |
 | Heist: show XP bar | on | Bar for the end level, under the lines. At level 100 while infamous it tracks the infamy pool. At least 8 x the text size wide so it doesn't jump as the numbers change. |
 | Heist: add level XP | off | Appends the level lines under the heist total. |
+| Heist log: show | on | |
+| Heist log: XP gains | on | One line per award with its label. Not in Crime Spree. |
+| Heist log: new objectives | on | The objective's name when it appears. |
+| Heist log: completed objectives | off | `Done ...` lines for objectives and sub-objectives. |
+| Heist log: name length | 28 | Objective names drop anything in brackets, then are cut at a word boundary. |
+| Heist log: heist time | on | Heist timer at that moment, e.g. `05:37`. |
+| Heist log: horizontal / vertical position | 100 / 40 | The log keeps room for its line count. At 50 or less it fills from the top, above 50 from the bottom. |
+| Heist log: lines | 6 | |
+| Heist log: fade after (seconds) | 0 | 0 = lines stay until newer ones push them out. |
 | Main menu: add to profile box | on | Takes effect the next time the main menu screen is shown. |
 | Lobby: show level XP | on | |
 | Lobby: horizontal / vertical position | 0 / 27 | 27 is under the lobby code, above the chat. |
@@ -64,6 +99,8 @@ Positions are percentages of the HUD safe area: 0 puts the label against the lef
 - `lib/managers/hudmanagerpd2`: post-hook on `HUDManager:_setup_player_info_hud_pd2` adds a panel named `xp_total_hud` to the `PLAYER_INFO_HUD_PD2` panel (the same parent as the vanilla hint, heist timer and objectives). It hides with the rest of the HUD.
 - The heist total is `ExperienceManager:get_xp_dissected(true, alive players, not in custody)`, the call `MissionEndState` makes on a successful day. It is recomputed every second because it changes when players die, go into custody or leave, not only when objectives pay.
 - `lib/managers/experiencemanager`: pre/post hooks on `ExperienceManager:mission_xp_award` compare the total before and after each award to get the gain after all multipliers.
+- `lib/managers/mission/elementexperience`: pre/post hooks on `ElementExperience:on_executed` (clients run it through `client_on_executed`) record the element's editor name and base `_values.amount` for the log.
+- `lib/managers/objectivesmanager`: post-hooks on `activate_objective` / `activate_objective_countdown` (log `new`), `complete_sub_objective`, and pre/post hooks on `complete_objective` / `complete_objective_countdown` (`done` only when the objective leaves the active list, so "bag 4 of 8" objectives log once). Calls with `load_data`, which restore objectives on drop-in, are skipped. The log is reset when the heist HUD is built.
 - The level at day end replays `ExperienceManager:add_points` on the heist total: the rest of the current level (`next_level_data_points - next_level_data_current_points`), then each next level's points from the cached level table. At the level cap the remainder goes to the infamy pool when the infamy rank is above 0 and is lost otherwise, as in the game. `MissionEndState` gives that same total through `give_experience` on a successful day.
 - Level XP comes from `current_level`, `next_level_data_current_points`, `current_rank` and the prestige XP getters. The level point table is read once through `tweak_data:get_value` and cached.
 - `lib/managers/menu/playerprofileguiobject`: post-hook on `PlayerProfileGuiObject:init` appends the lines to the text column (found 15 units right of the prestige ring, where vanilla puts CASH / OFFSHORE ACCOUNT / COINS), colors the labels with `make_color_text` like vanilla, then grows the box upward from its fixed bottom edge. BLT's notification box is created after the profile box and anchored to its top, so it moves up with it. If nothing sits in that column (a modded box), the box is left alone. The box is rebuilt every time the main menu screen is shown, so the lines are current.
@@ -83,3 +120,9 @@ Positions are percentages of the HUD safe area: 0 puts the label against the lef
 - The heist label is hidden in Crime Spree, which pays XP by spree level rather than with the heist formula.
 - The heist total assumes the day ends in success with the players alive right now. Multi-day jobs show the current day only, like XP Notifier.
 - If a calculation throws, the last value stays on screen and the error is logged once to the BLT log.
+- Heists missing from the XP name table (custom heists, new heists) fall back to labels 2-4. Rebuild the table after EHI adds them.
+- The table maps amounts, not elements: an award whose base amount matches one objective on the heist gets that name even if a different trigger fired it.
+
+## Credits
+
+Objective names in `lua/ehi_xp_names.lua` come from Extra Heist Info by Dom ([modworkshop](https://modworkshop.net/mod/31915)).
