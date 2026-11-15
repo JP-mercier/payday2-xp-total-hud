@@ -618,11 +618,44 @@ function XPTotalHUD:_ehi_names(base_amount)
 	return level and level[base_amount] or nil
 end
 
--- Labels, best first: the table's name when only one objective on the level pays the amount; of several,
--- the one matching the element name; a sub-objective, then an objective, completed within CAUSE_WINDOW
--- seconds; the element name; the table's two names when exactly two share the amount. An objective
--- appearing is never a label: XP next to it pays for the step just finished.
-local CAUSE_RANK = { ehi = 4, ehi_match = 3, sub = 2, done = 1, element = 0.5, ehi_multi = 0.2 }
+-- How a bag secured next to an award of this base XP may label it: "loot" when the table says the level
+-- pays that amount per bag (First World Bank pays 1000 per bag, the same as a security code), "loot_maybe"
+-- when the table doesn't know the amount, nil when the amount belongs to objectives only.
+function XPTotalHUD:_loot_kind(base_amount)
+	local data = base_amount and self:_ehi_table()
+	local level_id = data and Global.game_settings and Global.game_settings.level_id
+	if not level_id then
+		return "loot_maybe"
+	end
+	local file_id = data.redirect and data.redirect[level_id] or level_id
+	local loot = data.loot and data.loot[file_id]
+	if loot and loot[base_amount] then
+		return "loot"
+	end
+	local level = data.levels[file_id]
+	if level and level[base_amount] then
+		return nil
+	end
+	return "loot_maybe"
+end
+
+-- The carry's name for a secured bag ("Money", "Gold").
+function XPTotalHUD:_carry_name(carry_id)
+	local carry = carry_id and tweak_data.carry and tweak_data.carry[carry_id]
+	local name_id = type(carry) == "table" and carry.name_id
+	local text = name_id and managers.localization and managers.localization:text(name_id)
+	if type(text) == "string" and text ~= "" and not text:find("ERROR", 1, true) then
+		return text
+	end
+	return "Bag secured"
+end
+
+-- Labels, best first: the bag just secured when the level pays that amount per bag; the table's name
+-- when only one objective on the level pays the amount; of several, the one matching the element name;
+-- a sub-objective, then an objective, completed within CAUSE_WINDOW seconds; a bag secured when the
+-- table doesn't know the amount; the element name; the table's two names when exactly two share the
+-- amount. An objective appearing is never a label: XP next to it pays for the step just finished.
+local CAUSE_RANK = { loot = 5, ehi = 4, ehi_match = 3, sub = 2, done = 1, loot_maybe = 0.6, element = 0.5, ehi_multi = 0.2 }
 
 -- Words in an element name that don't tell objectives apart.
 local MATCH_SKIP_WORDS = {
@@ -706,6 +739,18 @@ function XPTotalHUD:log_xp(amount, element_name, base_amount)
 		end
 		self:_credit(entry, event.kind, event.text)
 	end
+	-- A bag secured just before (the host runs the bag's XP element inside the secure call).
+	entry.base = base_amount
+	local loot_kind = self:_loot_kind(base_amount)
+	if loot_kind and CAUSE_RANK[loot_kind] > (CAUSE_RANK[entry.cause_kind] or -1) then
+		for _, bag in ipairs(self._loot_events or {}) do
+			if not bag.claimed and now - bag.t <= self.CAUSE_WINDOW then
+				bag.claimed = true
+				entry.cause, entry.cause_kind, entry.loot = bag.name, loot_kind, true
+				break
+			end
+		end
+	end
 	if not entry.cause then
 		local label = self:_element_label(element_name)
 		if label then
@@ -735,6 +780,37 @@ function XPTotalHUD:_log_missing_name(base_amount, element_name)
 	local known = data and data.levels[file_id]
 	log(string.format("[XP Total HUD] no XP name: level '%s'%s, base %s, element '%s'", tostring(level_id),
 		known and "" or " (level not in table)", tostring(base_amount), tostring(element_name)))
+end
+
+-- A bag secured (LootManager:sync_secure_loot, on the host and on clients). Not a log line: it labels
+-- the XP award it causes, which comes right after it, or claims one that came just before.
+function XPTotalHUD:log_loot(carry_id)
+	if not self._log_label or not alive(self._log_label.panel) then
+		return
+	end
+	local now = Application:time()
+	local bag = { t = now, name = self:_carry_name(carry_id) }
+	for i = #self._log, 1, -1 do
+		local entry = self._log[i]
+		if entry.t and now - entry.t > self.CAUSE_WINDOW then
+			break
+		end
+		-- Only when the table says the amount is paid per bag: an award of unknown origin that came
+		-- first is more likely something else.
+		if entry.kind == "xp" and not entry.loot and self:_loot_kind(entry.base) == "loot"
+			and CAUSE_RANK.loot > (CAUSE_RANK[entry.cause_kind] or -1) then
+			bag.claimed = true
+			entry.cause, entry.cause_kind, entry.loot = bag.name, "loot", true
+			self:_refresh_log()
+			break
+		end
+	end
+	local events = self._loot_events or {}
+	self._loot_events = events
+	table.insert(events, bag)
+	while events[1] and now - events[1].t > self.CAUSE_WINDOW do
+		table.remove(events, 1)
+	end
 end
 
 -- kind is "new", "done" or "sub" (a sub-objective done). Only recorded during a heist (the log is reset
@@ -854,7 +930,8 @@ function XPTotalHUD:_log_view(entries, fade)
 		for i, entry in ipairs(entries) do
 			if entry.kind == "new" then
 				last_new[entry.text] = i
-			elseif entry.kind == "xp" and entry.objective and entry.cause_kind ~= "sub" and last_new[entry.objective] then
+			elseif entry.kind == "xp" and entry.objective and entry.cause_kind ~= "sub" and not entry.loot
+				and last_new[entry.objective] then
 				local line = last_new[entry.objective]
 				line_xp[line] = (line_xp[line] or 0) + entry.amount
 				attached[i] = true
@@ -977,6 +1054,7 @@ function XPTotalHUD:create_log_label(hud_panel)
 		hud_panel:remove(old)
 	end
 	self._log = {}
+	self._loot_events = {}
 	-- Loads the names now (the loading screen) rather than at the first award, mid-heist.
 	self:_safe(self._ehi_table)
 	self._log_label = self:_create_log(hud_panel, "xp_total_hud_log")
