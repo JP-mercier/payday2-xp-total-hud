@@ -28,7 +28,7 @@ In heists there is also a log of each XP award with what gave it, newest at the 
 
 <img src="screenshots/heist-log.png" width="497" alt="First World Bank log: Meet our Insider, OVERDRILL, Blow a hole in the wall, three Money bags">
 
-First World Bank on Death Wish: objectives named from the XP table, then three bags of money secured.
+First World Bank: objectives named from the XP table, then three bags of money secured.
 
 ## Heist log
 
