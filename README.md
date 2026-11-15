@@ -26,11 +26,9 @@ The heist total is the same number XP Notifier prints as "Total XP". The green `
 
 In heists there is also a log of each XP award with what gave it, newest at the bottom:
 
-```
-00:56  +270,480  Give the operator security
-01:05  +30,870  Bag secured
-01:10  +135,240  Called the elevator
-```
+<img src="screenshots/heist-log.png" width="497" alt="First World Bank log: Meet our Insider, OVERDRILL, Blow a hole in the wall, three Money bags">
+
+First World Bank on Death Wish: objectives named from the XP table, then three bags of money secured.
 
 ## Heist log
 
