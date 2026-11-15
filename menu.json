@@ -105,7 +105,7 @@
 			"description" : "xp_total_hud_log_show_objectives_desc",
 			"callback" : "xp_total_hud_callback_toggle",
 			"value" : "log_show_objectives",
-			"default_value" : true
+			"default_value" : false
 		},
 		{
 			"type" : "toggle",
@@ -123,7 +123,7 @@
 			"description" : "xp_total_hud_log_name_length_desc",
 			"callback" : "xp_total_hud_callback_slider",
 			"value" : "log_name_length",
-			"default_value" : 28,
+			"default_value" : 26,
 			"min" : 10,
 			"max" : 60,
 			"step" : 1,

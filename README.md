@@ -24,25 +24,25 @@ In lobbies, which have no profile box, the same two lines as a small label under
 
 The heist total is the same number XP Notifier prints as "Total XP". The green `+gain` appears for 5 seconds after an objective gives XP. Gains that land within that window add up.
 
-In heists there is also a log of objectives as they appear and of each XP award with what gave it, newest at the bottom:
+In heists there is also a log of each XP award with what gave it, newest at the bottom:
 
 ```
-02:10  +4,000  Timelock done
-02:11  Open the vault
-03:20  +30,870  Email
-05:37  +8,000  Correct PC Hack / Escape
+00:56  +270,480  Give the operator security
+01:05  +30,870  Bag secured
+01:10  +135,240  Called the elevator
 ```
 
 ## Heist log
 
-Each award's label is picked in this order:
+Each award gets a line, labeled in this order (with "new objectives" turned on, objectives also get a line when they appear, and XP paid for completing one goes on that line instead):
 
 1. The objective that pays that base amount on this heist, from the table in `lua/ehi_xp_names.lua` (names from [Extra Heist Info](https://modworkshop.net/mod/31915) by Dom), when only one objective pays it.
-2. A sub-objective, then an objective, completed within 2 seconds of the award, before or after it. Mission scripts run the XP and objective elements together, in either order.
-3. The table's names joined with ` / ` when several objectives on the heist pay the same amount.
-4. The mission script's name for the Experience element, with numbers and words like `xp` / `func` removed (`xp_pager_answered_002` -> `Pager answered`), in grey.
+2. When several objectives on the heist pay the same amount, the one whose words match the Experience element's name (`XP_found_LiDeng_or_Xunkang_stealth` -> `Found Li Deng or Xun Kang`). Words like `found` or `done` only break ties.
+3. A sub-objective, then an objective, completed within 2 seconds of the award, before or after it (mission scripts run the XP and objective elements in either order).
+4. The Experience element's name, with numbers and words like `xp` / `func` / `stealth` removed (`xp_pager_answered_002` -> `Pager answered`), in grey.
+5. The table's two names joined with ` / `, when exactly two objectives share the amount.
 
-An objective appearing is never used as a label: XP next to it pays for the step just finished. Awards with the same label within 1 second share a line. Amounts on the line are after all multipliers (the gain in the heist total); the table lookup uses the element's base amount.
+An objective appearing is never used as a label: XP next to it pays for the step just finished. Awards with the same label within 1 second share a line. Names drop anything in brackets and are cut at a word boundary, without small words like `the` or `from` at the end. Amounts on the line are after all multipliers (the gain in the heist total); the table lookup uses the element's base amount.
 
 `lua/ehi_xp_names.lua` holds 109 heists. `tools/extract_ehi_xp.py` rebuilds it from an EHI download, reading EHI's level files and `loc/english.json` as text (EHI doesn't need to be installed):
 
@@ -75,10 +75,10 @@ Mod Options > XP Total HUD. While this menu is open, a sample heist label (`XP 1
 | Heist: show XP bar | on | Bar for the end level, under the lines. At level 100 while infamous it tracks the infamy pool. At least 8 x the text size wide so it doesn't jump as the numbers change. |
 | Heist: add level XP | off | Appends the level lines under the heist total. |
 | Heist log: show | on | |
-| Heist log: XP gains | on | One line per award with its label. Not in Crime Spree. |
-| Heist log: new objectives | on | The objective's name when it appears. |
+| Heist log: XP gains | on | XP for a completed objective goes on its line, other awards get a labeled line. Not in Crime Spree. |
+| Heist log: new objectives | off | A line for each objective when it appears; XP for completing it then goes on that line. |
 | Heist log: completed objectives | off | `Done ...` lines for objectives and sub-objectives. |
-| Heist log: name length | 28 | Objective names drop anything in brackets, then are cut at a word boundary. |
+| Heist log: name length | 26 | Names drop anything in brackets, then are cut at a word boundary. |
 | Heist log: heist time | on | Heist timer at that moment, e.g. `05:37`. |
 | Heist log: horizontal / vertical position | 100 / 40 | The log keeps room for its line count. At 50 or less it fills from the top, above 50 from the bottom. |
 | Heist log: lines | 6 | |
@@ -120,7 +120,7 @@ Positions are percentages of the HUD safe area: 0 puts the label against the lef
 - The heist label is hidden in Crime Spree, which pays XP by spree level rather than with the heist formula.
 - The heist total assumes the day ends in success with the players alive right now. Multi-day jobs show the current day only, like XP Notifier.
 - If a calculation throws, the last value stays on screen and the error is logged once to the BLT log.
-- Heists missing from the XP name table (custom heists, new heists) fall back to labels 2-4. Rebuild the table after EHI adds them.
+- Heists missing from the XP name table (custom heists, new heists) fall back to labels 3-4. Rebuild the table after EHI adds them. Awards the table doesn't know are written to the BLT log once per heist and amount (`[XP Total HUD] no XP name: ...`).
 - The table maps amounts, not elements: an award whose base amount matches one objective on the heist gets that name even if a different trigger fired it.
 
 ## Credits

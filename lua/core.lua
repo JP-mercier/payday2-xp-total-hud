@@ -26,10 +26,10 @@ XPTotalHUD.settings = {
 	round_thousands = false,
 	log_enabled = true,
 	log_show_xp = true,
-	log_show_objectives = true,
+	log_show_objectives = false,
 	log_show_done = false,
 	log_show_time = true,
-	log_name_length = 28,
+	log_name_length = 26,
 	log_pos_x = 100,
 	log_pos_y = 40,
 	log_lines = 6,
@@ -66,21 +66,21 @@ XPTotalHUD.LOG_MERGE_SECONDS = 1
 -- "Hack done").
 XPTotalHUD.ELEMENT_NAME_STOP_WORDS = {
 	xp = true, exp = true, experience = true, give = true, func = true, award = true, add = true,
-	element = true, logic = true, trigger = true, mission = true, points = true, point = true
+	element = true, logic = true, trigger = true, mission = true, points = true, point = true,
+	stealth = true, loud = true
 }
 -- Sample lines for the options preview of the log.
 XPTotalHUD.PREVIEW_LOG = {
 	{ kind = "new", text = "Find the security room", time = "00:42" },
 	{ kind = "done", text = "Find the security room", time = "02:10" },
-	{ kind = "xp", amount = 4000, time = "02:10", cause = "Find the security room", cause_kind = "done" },
+	{ kind = "xp", amount = 4000, time = "02:10", objective = "Find the security room", cause = "Find the security room", cause_kind = "done" },
 	{ kind = "new", text = "Find dirt on Alice Rainey (Email, Voicemail, Photos)", time = "02:11" },
 	{ kind = "sub", text = "Email", time = "03:20" },
 	{ kind = "xp", amount = 30870, time = "03:20", cause = "Email", cause_kind = "sub" },
-	{ kind = "sub", text = "Voicemail", time = "04:02" },
-	{ kind = "xp", amount = 30870, time = "04:02", cause = "Voicemail", cause_kind = "sub" },
 	{ kind = "xp", amount = 8000, time = "04:30", cause = "Pager answered", cause_kind = "element" },
+	{ kind = "xp", amount = 6000, time = "05:02", cause = "Bag secured", cause_kind = "ehi" },
 	{ kind = "done", text = "Find dirt on Alice Rainey (Email, Voicemail, Photos)", time = "05:37" },
-	{ kind = "xp", amount = 339570, time = "05:37", cause = "Find dirt on Alice Rainey (Email, Voicemail, Photos)", cause_kind = "done" },
+	{ kind = "xp", amount = 339570, time = "05:37", objective = "Find dirt on Alice Rainey (Email, Voicemail, Photos)", cause = "Find dirt on Alice Rainey (Email, Voicemail, Photos)", cause_kind = "done" },
 	{ kind = "new", text = "Escape available", time = "05:38" }
 }
 
@@ -590,7 +590,13 @@ end
 -- id } }. False if it can't be loaded.
 function XPTotalHUD:_ehi_table()
 	if self._ehi == nil then
-		local ok, data = pcall(dofile, self._path .. "lua/ehi_xp_names.lua")
+		-- SuperBLT's dofile doesn't pass the file's return value through, so compile it directly.
+		local ok, data = pcall(function()
+			local file = assert(io.open(self._path .. "lua/ehi_xp_names.lua", "r"))
+			local src = file:read("*all")
+			file:close()
+			return assert(loadstring(src, "ehi_xp_names.lua"))()
+		end)
 		if ok and type(data) == "table" and type(data.levels) == "table" then
 			self._ehi = data
 		else
@@ -612,10 +618,72 @@ function XPTotalHUD:_ehi_names(base_amount)
 	return level and level[base_amount] or nil
 end
 
--- Causes, best first: EHI's name when the amount has only one on this level, a sub-objective or
--- objective completed within CAUSE_WINDOW seconds, EHI's names when several share the amount, the
--- element name. An objective appearing isn't a cause: XP next to it pays for the step just finished.
-local CAUSE_RANK = { ehi = 3, sub = 2, done = 1, ehi_multi = 0.5, element = 0 }
+-- Labels, best first: the table's name when only one objective on the level pays the amount; of several,
+-- the one matching the element name; a sub-objective, then an objective, completed within CAUSE_WINDOW
+-- seconds; the element name; the table's two names when exactly two share the amount. An objective
+-- appearing is never a label: XP next to it pays for the step just finished.
+local CAUSE_RANK = { ehi = 4, ehi_match = 3, sub = 2, done = 1, element = 0.5, ehi_multi = 0.2 }
+
+-- Words in an element name that don't tell objectives apart.
+local MATCH_SKIP_WORDS = {
+	xp = true, exp = true, the = true, ["and"] = true, ["or"] = true, of = true, to = true, from = true,
+	["in"] = true, on = true, at = true, stealth = true, loud = true, func = true, give = true, award = true
+}
+-- Words that fit too many objectives to pick one on their own; they only break ties.
+local MATCH_WEAK_WORDS = {
+	found = true, done = true, open = true, opened = true, got = true, get = true, secured = true,
+	complete = true, completed = true, finished = true, killed = true, destroyed = true
+}
+
+-- Of several names sharing an amount, the one whose words best match the element name
+-- ("XP_safe_found" -> "Found Li Deng's hidden safe"), or nil when none clearly does.
+function XPTotalHUD:_match_name(names, element_name)
+	if type(element_name) ~= "string" then
+		return nil
+	end
+	local words = {}
+	for word in element_name:lower():gmatch("%a+") do
+		if #word >= 3 and not MATCH_SKIP_WORDS[word] then
+			table.insert(words, word)
+		end
+	end
+	local best, best_strong, best_weak, tie = nil, 0, 0, false
+	for _, name in ipairs(names) do
+		-- Squashed so "LiDeng" in an element name finds "Li Deng".
+		local squashed = name:lower():gsub("%A", "")
+		local strong, weak = 0, 0
+		for _, word in ipairs(words) do
+			if squashed:find(word, 1, true) then
+				if MATCH_WEAK_WORDS[word] then
+					weak = weak + 1
+				else
+					strong = strong + 1
+				end
+			end
+		end
+		if strong > best_strong or strong == best_strong and weak > best_weak then
+			best, best_strong, best_weak, tie = name, strong, weak, false
+		elseif strong == best_strong and weak == best_weak then
+			tie = true
+		end
+	end
+	return best_strong > 0 and not tie and best or nil
+end
+
+-- An objective event next to an XP award. A completed objective is remembered so the award can go on
+-- that objective's line, and the event becomes the label if it ranks higher than the current one.
+function XPTotalHUD:_credit(entry, kind, text)
+	local rank = (kind == "sub" or kind == "done") and CAUSE_RANK[kind]
+	if entry.kind ~= "xp" or not rank then
+		return
+	end
+	if kind == "done" and not entry.objective then
+		entry.objective = text
+	end
+	if rank > (CAUSE_RANK[entry.cause_kind] or -1) then
+		entry.cause, entry.cause_kind = text, kind
+	end
+end
 
 -- Called from the mission_xp_award hooks with the Experience element's editor name and base amount.
 -- An objective event that comes right after can still claim the award (log_objective).
@@ -625,27 +693,48 @@ function XPTotalHUD:log_xp(amount, element_name, base_amount)
 	local names = self:_ehi_names(base_amount)
 	if names and #names == 1 then
 		entry.cause, entry.cause_kind = names[1], "ehi"
-		self:_log_add(entry)
-		return
+	elseif names then
+		local match = self:_match_name(names, element_name)
+		if match then
+			entry.cause, entry.cause_kind = match, "ehi_match"
+		end
 	end
 	for i = #self._log, 1, -1 do
 		local event = self._log[i]
 		if event.t and now - event.t > self.CAUSE_WINDOW then
 			break
 		end
-		local rank = CAUSE_RANK[event.kind]
-		if event.kind ~= "xp" and rank and rank > (CAUSE_RANK[entry.cause_kind] or -1) then
-			entry.cause, entry.cause_kind = event.text, event.kind
-		end
-	end
-	if not entry.cause and names and #names > 1 then
-		entry.cause, entry.cause_kind = table.concat(names, " / "), "ehi_multi"
+		self:_credit(entry, event.kind, event.text)
 	end
 	if not entry.cause then
-		entry.cause = self:_element_label(element_name)
-		entry.cause_kind = entry.cause and "element" or nil
+		local label = self:_element_label(element_name)
+		if label then
+			entry.cause, entry.cause_kind = label, "element"
+		elseif names and #names == 2 then
+			entry.cause, entry.cause_kind = table.concat(names, " / "), "ehi_multi"
+		end
+	end
+	if not names and base_amount then
+		self:_log_missing_name(base_amount, element_name)
 	end
 	self:_log_add(entry)
+end
+
+-- Writes awards the name table doesn't know to the BLT log, once per level and amount, so the table
+-- can be completed.
+function XPTotalHUD:_log_missing_name(base_amount, element_name)
+	local level_id = Global.game_settings and Global.game_settings.level_id
+	local key = tostring(level_id) .. ":" .. tostring(base_amount)
+	self._missing_logged = self._missing_logged or {}
+	if self._missing_logged[key] then
+		return
+	end
+	self._missing_logged[key] = true
+	local data = self:_ehi_table()
+	local file_id = data and data.redirect and data.redirect[level_id] or level_id
+	local known = data and data.levels[file_id]
+	log(string.format("[XP Total HUD] no XP name: level '%s'%s, base %s, element '%s'", tostring(level_id),
+		known and "" or " (level not in table)", tostring(base_amount), tostring(element_name)))
 end
 
 -- kind is "new", "done" or "sub" (a sub-objective done). Only recorded during a heist (the log is reset
@@ -665,15 +754,12 @@ function XPTotalHUD:log_objective(kind, text)
 	end
 	-- XP awarded just before this event, in the same mission script run, belongs to it.
 	local now = Application:time()
-	local rank = CAUSE_RANK[kind]
 	for i = #self._log, 1, -1 do
 		local entry = self._log[i]
-		if not rank or entry.t and now - entry.t > self.CAUSE_WINDOW then
+		if entry.t and now - entry.t > self.CAUSE_WINDOW then
 			break
 		end
-		if entry.kind == "xp" and rank > (CAUSE_RANK[entry.cause_kind] or -1) then
-			entry.cause, entry.cause_kind = text, kind
-		end
+		self:_credit(entry, kind, text)
 	end
 	self:_log_add({ kind = kind, text = text, t = now })
 end
@@ -682,9 +768,15 @@ function XPTotalHUD:_trim(text)
 	return (text:gsub("%s+", " "):gsub("^ ", ""):gsub(" $", ""))
 end
 
--- The mission objective text, shortened for the log: anything in brackets goes ("Find dirt on Alice
--- Rainey (Email, Voicemail, ...)" -> "Find dirt on Alice Rainey"), then it's cut at a word boundary to
--- log_name_length characters.
+-- Small words a cut name shouldn't end on ("Call the elevator from the" -> "Call the elevator").
+local TRAILING_WORDS = {
+	the = true, a = true, an = true, to = true, from = true, of = true, ["and"] = true, ["or"] = true,
+	["in"] = true, on = true, at = true, ["for"] = true, with = true, into = true, by = true
+}
+
+-- An objective name shortened for the log: anything in brackets goes ("Find dirt on Alice Rainey
+-- (Email, Voicemail)" -> "Find dirt on Alice Rainey"), then it's cut at a word boundary to
+-- log_name_length characters, without small words at the end.
 function XPTotalHUD:_short_name(text)
 	local short = self:_trim(text:gsub("%b()", ""):gsub("%b[]", ""))
 	short = self:_trim(short:gsub("[%s:,;%-]+$", ""))
@@ -696,14 +788,26 @@ function XPTotalHUD:_short_name(text)
 		return short
 	end
 	local cut = utf8.sub(short, 1, max)
-	local space = cut:match(".*() ")
-	if space and space > #cut / 2 then
-		cut = cut:sub(1, space - 1)
+	if utf8.sub(short, max + 1, max + 1) ~= " " then
+		local space = cut:match(".*() ")
+		if space and space > #cut / 2 then
+			cut = cut:sub(1, space - 1)
+		end
 	end
-	return self:_trim(cut:gsub("[%s:,;%-]+$", "")) .. "..."
+	cut = self:_trim(cut)
+	while true do
+		local word = cut:match("(%S+)$")
+		local rest = word and TRAILING_WORDS[word:lower()] and self:_trim(cut:sub(1, #cut - #word))
+		if not rest or rest == "" then
+			break
+		end
+		cut = rest
+	end
+	return self:_trim(cut:gsub("[%s:,;%-]+$", ""))
 end
 
--- Colored pieces of one log line: { text, color } pairs.
+-- Colored pieces of one log line: { text, color } pairs. An objective line carries the XP its
+-- completion paid, once it's done.
 function XPTotalHUD:_log_segments(item)
 	local segments = {}
 	if self.settings.log_show_time and item.time then
@@ -713,8 +817,7 @@ function XPTotalHUD:_log_segments(item)
 		if item.cause then
 			-- Element names are a best guess from the mission script, so they're grey.
 			table.insert(segments, { "+" .. self:format_xp(item.amount) .. "  ", self.GAIN_COLOR })
-			local name = item.cause_kind == "element" and item.cause or self:_short_name(item.cause)
-			table.insert(segments, { name, item.cause_kind == "element" and self.PREFIX_COLOR or self.LOG_TEXT_COLOR })
+			table.insert(segments, { self:_short_name(item.cause), item.cause_kind == "element" and self.PREFIX_COLOR or self.LOG_TEXT_COLOR })
 		else
 			table.insert(segments, { "+" .. self:format_xp(item.amount) .. " XP", self.GAIN_COLOR })
 		end
@@ -722,6 +825,9 @@ function XPTotalHUD:_log_segments(item)
 		table.insert(segments, { "Done ", self.GAIN_COLOR })
 		table.insert(segments, { self:_short_name(item.text), self.PREFIX_COLOR })
 	else
+		if item.amount then
+			table.insert(segments, { "+" .. self:format_xp(item.amount) .. "  ", self.GAIN_COLOR })
+		end
 		table.insert(segments, { self:_short_name(item.text), self.LOG_TEXT_COLOR })
 	end
 	return segments
@@ -737,14 +843,28 @@ function XPTotalHUD:_log_entry_shown(entry)
 end
 
 -- The last log_lines lines from the entries that pass the filters, oldest first, with their fade
--- alpha. Back-to-back XP entries with the same cause within LOG_MERGE_SECONDS become one line.
--- `fade` overrides the fade setting (0 = no fading).
+-- alpha. XP paid when an objective was completed goes on that objective's line (when objective lines
+-- are shown), except XP a sub-objective explains. Back-to-back XP lines with the same label within
+-- LOG_MERGE_SECONDS become one. `fade` overrides the fade setting (0 = no fading).
 function XPTotalHUD:_log_view(entries, fade)
-	local items = {}
 	fade = fade or self.settings.log_fade
+	local attached, line_xp = {}, {}
+	if self.settings.log_show_objectives and self.settings.log_show_xp then
+		local last_new = {}
+		for i, entry in ipairs(entries) do
+			if entry.kind == "new" then
+				last_new[entry.text] = i
+			elseif entry.kind == "xp" and entry.objective and entry.cause_kind ~= "sub" and last_new[entry.objective] then
+				local line = last_new[entry.objective]
+				line_xp[line] = (line_xp[line] or 0) + entry.amount
+				attached[i] = true
+			end
+		end
+	end
+	local items = {}
 	for i = #entries, 1, -1 do
 		local entry = entries[i]
-		if self:_log_entry_shown(entry) then
+		if not attached[i] and self:_log_entry_shown(entry) then
 			local alpha = 1
 			if fade > 0 then
 				alpha = math.clamp((fade + self.LOG_FADE_OUT - (entry.age or 0)) / self.LOG_FADE_OUT, 0, 1)
@@ -763,7 +883,7 @@ function XPTotalHUD:_log_view(entries, fade)
 				table.insert(items, 1, {
 					kind = entry.kind,
 					text = entry.text,
-					amount = entry.amount,
+					amount = line_xp[i] or entry.amount,
 					cause = entry.cause,
 					cause_kind = entry.cause_kind,
 					time = entry.time,
