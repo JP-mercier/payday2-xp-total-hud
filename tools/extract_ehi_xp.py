@@ -92,6 +92,11 @@ def loot_entries(src):
 NAME_OVERRIDES = {"loot_all": "Bag secured", "_else": "Bag secured", "diamonds_dah": "Diamonds",
                   "mus_artifact": "Artifact"}
 
+# Base amounts EHI has wrong, checked in game: level id -> key -> amount the game pays.
+# Alesso pays 2000 for each C4 taken from a closet (5 on Overkill and up), so EHI's 1000/2000 for
+# find/place look swapped.
+AMOUNT_FIXES = {"arena": {"alesso_find_c4": 2000, "c4_set_up": 1000}}
+
 
 def pretty(key):
     if key in NAME_OVERRIDES:
@@ -118,7 +123,9 @@ def main(ehi_dir):
                 if base_path.exists() and base_path != path:
                     src += "\n" + strip_comments(base_path.read_text(encoding="utf-8", errors="replace"))
             by_amount = {}
+            fixes = AMOUNT_FIXES.get(path.stem, {})
             for amount, key in entries(src):
+                amount = fixes.get(key, amount)
                 if amount <= 0:
                     continue
                 name = loc.get("ehi_experience_" + key) or pretty(key)

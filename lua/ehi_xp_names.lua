@@ -21,10 +21,10 @@ return {
 			[14000] = { "All bags secured" },
 		},
 		["arena"] = {
-			[1000] = { "Find C4" },
+			[1000] = { "Placed C4" },
 			[1200] = { "Loot Secured" },
 			[1500] = { "Loot Secured" },
-			[2000] = { "Placed C4" },
+			[2000] = { "Find C4" },
 			[3000] = { "Pyro set" },
 			[10000] = { "PC Hack" },
 		},
